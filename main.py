@@ -127,22 +127,40 @@ class OligopolyMarket:
         self.history = []
 
     def calculate_demand(self, prices: List[float]) -> List[float]:
-        """Calculate demand for each firm using logit model"""
+        """Calculate demand for each firm using logit model with outside option"""
         # Price sensitivity parameter
         beta = 0.3
 
-        # Calculate utilities (higher for lower prices)
-        utilities = [-beta * p for p in prices]
+        # Calculate utilities for each firm (higher for lower prices)
+        firm_utilities = [-beta * p for p in prices]
 
-        # Add random preference shocks
-        utilities = [u + random.gauss(0, 0.1) for u in utilities]
+        # Add random preference shocks to firm utilities
+        firm_utilities = [u + random.gauss(0, 0.1) for u in firm_utilities]
 
-        # Logit probabilities
-        exp_utilities = [np.exp(u) for u in utilities]
+        # Outside option utility (not buying at all)
+        # This represents consumer surplus from not purchasing
+        outside_utility = 0.0  # Normalized to 0
+
+        # All utilities including outside option
+        all_utilities = firm_utilities + [outside_utility]
+
+        # Logit probabilities including outside option
+        exp_utilities = [np.exp(u) for u in all_utilities]
         sum_exp = sum(exp_utilities)
 
-        market_shares = [exp_u / sum_exp for exp_u in exp_utilities]
-        quantities = [share * self.market_size for share in market_shares]
+        # Calculate choice probabilities
+        choice_probabilities = [exp_u / sum_exp for exp_u in exp_utilities]
+
+        # Firm probabilities (excluding outside option)
+        firm_probabilities = choice_probabilities[:-1]
+        outside_probability = choice_probabilities[-1]
+
+        # Total market participation (1 - outside option probability)
+        market_participation = 1 - outside_probability
+
+        # Quantities: firm probability * participating customers
+        quantities = [prob * self.market_size * market_participation for prob in
+                      firm_probabilities]
 
         return quantities
 
@@ -187,6 +205,35 @@ class OligopolyMarket:
         return self.history
 
 
+def calculate_monopoly_price(market_size: float = 1000, beta: float = 0.3,
+                             marginal_cost: float = 5.0) -> float:
+    """Calculate theoretical monopoly price that maximizes total profit with outside option"""
+    best_price = marginal_cost
+    best_profit = 0
+
+    # Search for profit-maximizing price
+    for price in np.arange(marginal_cost + 0.1, 30.0, 0.1):
+        # Single firm monopoly demand with outside option
+        firm_utility = -beta * price
+        outside_utility = 0.0
+
+        # Logit choice probabilities
+        exp_firm = np.exp(firm_utility)
+        exp_outside = np.exp(outside_utility)
+        sum_exp = exp_firm + exp_outside
+
+        # Probability of choosing the firm (vs outside option)
+        choice_prob = exp_firm / sum_exp
+        quantity = choice_prob * market_size
+        profit = (price - marginal_cost) * quantity
+
+        if profit > best_profit:
+            best_profit = profit
+            best_price = price
+
+    return best_price
+
+
 def analyze_collusion(market_history: List[MarketState]) -> dict:
     """Analyze the degree of tacit collusion in the market"""
     n_periods = len(market_history)
@@ -204,21 +251,30 @@ def analyze_collusion(market_history: List[MarketState]) -> dict:
     # Calculate average prices over time
     avg_prices_over_time = [np.mean(state.prices) for state in market_history]
 
-    # Monopoly benchmark (theoretical collusive price)
-    monopoly_price = 15.0  # Estimated based on demand parameters
-    competitive_price = 7.0  # Close to marginal cost
+    # Calculate proper benchmarks
+    monopoly_price = calculate_monopoly_price()
+    competitive_price = 5.5  # Slightly above marginal cost (5.0) for sustainable competition
 
     final_avg_price = np.mean(avg_prices_over_time[-50:])
 
     # Collusion index (0 = competitive, 1 = monopoly)
-    collusion_index = (final_avg_price - competitive_price) / (
-                monopoly_price - competitive_price)
-    collusion_index = max(0, min(1, collusion_index))
+    if monopoly_price > competitive_price:
+        collusion_index = (final_avg_price - competitive_price) / (
+                    monopoly_price - competitive_price)
+        collusion_index = max(0, min(1, collusion_index))
+    else:
+        collusion_index = 0
+
+    # If prices exceed monopoly price, calculate "super-collusion" index
+    super_collusion = 0
+    if final_avg_price > monopoly_price:
+        super_collusion = (final_avg_price - monopoly_price) / monopoly_price
 
     return {
         'avg_price_variance': avg_price_variance,
         'final_average_price': final_avg_price,
         'collusion_index': collusion_index,
+        'super_collusion_index': super_collusion,
         'monopoly_benchmark': monopoly_price,
         'competitive_benchmark': competitive_price
     }
@@ -226,7 +282,8 @@ def analyze_collusion(market_history: List[MarketState]) -> dict:
 
 def plot_simulation_results(market: OligopolyMarket, analysis: dict):
     """Create visualization of simulation results"""
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    fig, ((ax1, ax2), (ax3, ax4), (ax5, ax6)) = plt.subplots(3, 2,
+                                                             figsize=(15, 18))
 
     periods = range(len(market.history))
 
@@ -279,6 +336,24 @@ def plot_simulation_results(market: OligopolyMarket, analysis: dict):
     ax4.legend()
     ax4.grid(True, alpha=0.3)
 
+    # Plot 5: Total market quantity (shows customer participation)
+    total_quantities = [sum(state.quantities) for state in market.history]
+    ax5.plot(periods, total_quantities, color='brown', linewidth=2)
+    ax5.set_xlabel('Period')
+    ax5.set_ylabel('Total Quantity Sold')
+    ax5.set_title('Market Participation (Total Sales)')
+    ax5.grid(True, alpha=0.3)
+
+    # Plot 6: Market participation rate
+    participation_rates = [sum(state.quantities) / market.market_size for state
+                           in market.history]
+    ax6.plot(periods, participation_rates, color='teal', linewidth=2)
+    ax6.set_xlabel('Period')
+    ax6.set_ylabel('Participation Rate')
+    ax6.set_title('Customer Participation Rate')
+    ax6.set_ylim(0, 1)
+    ax6.grid(True, alpha=0.3)
+
     plt.tight_layout()
     plt.show()
 
@@ -303,6 +378,18 @@ def main():
     print(f"Monopoly Benchmark: ${analysis['monopoly_benchmark']:.2f}")
     print(
         f"Collusion Index: {analysis['collusion_index']:.3f} (0=competitive, 1=monopoly)")
+    # Calculate final participation rate
+    final_periods = market.history[-10:]
+    participation_rates = [sum(state.quantities) / market.market_size for state
+                           in final_periods]
+    final_participation = np.mean(
+        participation_rates) if participation_rates else 0
+
+    print(f"Final Market Participation Rate: {final_participation:.1%}")
+    print(f"Customers Not Buying: {(1 - final_participation) * 100:.1f}%")
+    if analysis['super_collusion_index'] > 0:
+        print(
+            f"Super-Collusion Index: {analysis['super_collusion_index']:.3f} (prices above monopoly level)")
     print(
         f"Price Variance (final periods): {analysis['avg_price_variance']:.3f}")
 
